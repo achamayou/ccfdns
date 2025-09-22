@@ -116,6 +116,11 @@ set_property(
     "SNP_REPORT_BINARY=${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/get-snp-report/bin/get-snp-report"
 )
 
+add_test(
+  NAME adns_attestation_verification
+  COMMAND python ../tests/test_adns_attestation_verification.py ${CMAKE_CURRENT_SOURCE_DIR}/tests/sample_snp_attestation.cbor
+)
+
 if(COMPILE_TARGET STREQUAL "snp")
   execute_process(
     COMMAND find / -maxdepth 1 -type d -name "security-context*"
