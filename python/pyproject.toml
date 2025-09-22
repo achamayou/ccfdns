@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=71.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ccfdns"
+version = "0.0.0"
+authors = [
+  { name="CCF Team", email="CCF-Sec@microsoft.com" },
+]
+description = "Set of tools and utilities for CCFDNS"
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+]
+dependencies = [
+    "cryptography >= 44,< 46",
+    "setuptools >= 74,< 81",
+    "packaging >= 24,< 26",
+]
+
+[project.urls]
+Homepage = "https://github.com/microsoft/ccfdns"
+Issues = "https://github.com/microsoft/ccfdns/issues"
