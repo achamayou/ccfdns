@@ -231,15 +231,15 @@ default allow := true
   virtual void on_new_signing_key(
     const Name& origin,
     uint16_t tag,
-    const ccf::crypto::Pem& pem,
+    const ccf::crypto::KeyPairPtr& kp,
     bool key_signing) override
   {
     auto conf = get_configuration();
 
     if (conf.use_key_signing_key && key_signing)
-      key_signing_keys[origin] = pem;
+      key_signing_keys[origin] = kp->private_key_pem();
     else
-      zone_signing_keys[origin] = pem;
+      zone_signing_keys[origin] = kp->private_key_pem();
   }
 
   virtual void show(const Name& origin) const
@@ -427,7 +427,7 @@ default allow := true
 
     QCBOREncode_AddInt64ToMapN(&cbor_encode, 1, sign_ctx.cose_algorithm_id);
 
-    QCBOREncode_OpenMapInMapN(&cbor_encode, CWT_CLAIMS_LABEL); // > phdr.cwt
+    QCBOREncode_OpenMapInMapN(&cbor_encode, COSE_CWT_LABEL); // > phdr.cwt
 
     QCBOREncode_AddTextToMapN(
       &cbor_encode, CWT_ISS_LABEL, from_string(cwt_claims.iss));
@@ -948,7 +948,8 @@ TEST_CASE("Service registration")
        .ip = "127.0.0.1",
        .protocol = "tcp",
        .port = 53}}};
-  s.configure(cfg);
+  s.set_configuration(cfg);
+  s.configure();
 
   Name service_name("service42.example.com.");
 
@@ -965,7 +966,11 @@ TEST_CASE("Service registration")
   cose::ServiceInfo svi{.port = "443", .protocol = "tcp", .ipv4 = address};
 
   cose::CwtClaim cwt_claims{
-    .iss = url_name, .cnf = cnf, .att = get_attestation_type(), .svi = svi};
+    .iss = url_name,
+    .sub = {},
+    .cnf = cnf,
+    .att = get_attestation_type(),
+    .svi = svi};
 
   auto rr = s.create_cose_sign1(cwt_claims, s.get_service_key());
   s.register_service(rr);
