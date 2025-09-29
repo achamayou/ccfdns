@@ -19,6 +19,7 @@ dependencies = [
     "cryptography >= 44,< 46",
     "setuptools >= 74,< 81",
     "packaging >= 24,< 26",
+    "cwt >= 3.1.0, == 3.*",
     "cbor2",
     "snp-pytools @ git+https://github.com/TEE-Attestation/snp_pytools.git#egg=f3422d9e06ed0dc091a075e5878b2631be464a79"
 ]
