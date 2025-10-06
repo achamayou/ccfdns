@@ -150,7 +150,7 @@ def main():
         description="Simple HTTPS Server with Self-Signed Certificate"
     )
     parser.add_argument(
-        "--host", default="127.0.0.1", help="Host to bind to (default: localhost)"
+        "--host", default="0.0.0.0", help="Host to bind to (default: localhost)"
     )
     parser.add_argument("--port", type=int, default=12345, help="Port to bind to")
     parser.add_argument(
@@ -220,7 +220,7 @@ def main():
         submit_service_registration(
             adns_url=args.adns,
             name=args.dns_name,
-            address="127.0.0.1",
+            address="127.0.0.1",  # change to server IP for distribtuted demo
             port=args.port,
             protocol="tcp",
             service_key=service_key,
