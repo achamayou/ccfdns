@@ -2,6 +2,10 @@
 
 A CCF-based, attested DNS server.
 
+See [micro aDNS as a Kubernetes cluster resolver](./micro_aDNS.md) for a
+single-zone design that uses encrypted DNS transports instead of DNSSEC, with
+an optional Merkle-authenticated multi-zone extension.
+
 # Build
 
 The build depends on a local installation of [CCF](https://github.com/microsoft/ccf) 6.0.0 or above, on Azure Linux 3.0.
