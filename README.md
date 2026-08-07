@@ -3,8 +3,9 @@
 A CCF-based, attested DNS server.
 
 See [micro aDNS as a Kubernetes cluster resolver](./micro_aDNS.md) for a
-single-zone design that uses encrypted DNS transports instead of DNSSEC, with
-an optional Merkle-authenticated multi-zone extension.
+single-zone design that uses encrypted DNS transports instead of DNSSEC.
+See [efficient delegation for aDNS](./efficient_delegation_aDNS.md) for an
+optional multi-zone design based on one Merkle tree per zone.
 
 # Build
 
