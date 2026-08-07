@@ -1,4 +1,4 @@
-# micro aDNS: a Kubernetes cluster resolver
+# micro aDNS: a single-zone cluster DNS service for Kubernetes
 
 ## Status and scope
 
@@ -11,18 +11,45 @@ is a design note, not a description of the current aDNS implementation.
 > zones. The base design does not use child-zone delegation, a DNSSEC trust
 > chain, or multi-zone administration.
 
-Pods use this service as their cluster resolver. aDNS is authoritative for
-Service and Pod records in the configured cluster domain. For a name outside
-that domain, the deployment forwards the query to a separate recursive
-resolver or refuses the query. Forwarding a query does not make the upstream
-DNS name or zone part of the aDNS-managed cluster zone.
+## Terminology
+
+This proposal follows the current definitions in
+[RFC 9499, Section 6](https://www.rfc-editor.org/rfc/rfc9499.html#section-6).
+RFC 9499 uses the original resolver definition from
+[RFC 1034, Section 2.4](https://www.rfc-editor.org/rfc/rfc1034.html#section-2.4).
+
+- A **Pod stub resolver** sends recursive queries (`RD=1`) to the node-local
+  recursive resolver. It cannot complete all resolution itself.
+- The **node-local recursive resolver** accepts Pod recursive queries and
+  caches responses. It sends cluster-zone queries directly to aDNS. For other
+  names, it performs forwarding or returns REFUSED.
+- The private **aDNS authoritative-only server** answers only for the cluster
+  zone from committed CCF state. It never performs forwarding or recursion.
+- An **external recursive resolver** resolves names outside the cluster zone.
+
+The term **cluster DNS service** means the complete deployment. It includes
+the node-local recursive resolvers and the shared aDNS authoritative-only
+server.
+
+Each Pod uses a stub resolver. The stub sends recursive queries to a node-local
+recursive resolver. That resolver sends cluster-zone queries directly to aDNS.
+aDNS is authoritative for Service and Pod records in the configured cluster
+domain. For a name outside that domain, the node-local resolver forwards the
+query to an external recursive resolver or refuses the query. This action does
+not add the external DNS name or zone to the aDNS-managed cluster zone.
+
+The node-local recursive resolver and each native aDNS-aware client MUST
+authenticate the aDNS endpoint. Neither component may fall back to cleartext
+DNS for names in the cluster zone. The classic DNS path from a Pod stub
+resolver to the node-local recursive resolver remains inside the node.
 
 The deployment serves one Kubernetes cluster and one trust domain. It is not a
-public recursive resolver or a public authoritative DNS service. The aDNS
-service is cluster-wide. It is not a separate resolver on each node. All
-node-local adapters connect to one logical aDNS service. CCF replicates this
-service, which can expose multiple endpoints for availability. Native
-encrypted-DNS clients can connect to these endpoints directly.
+public DNS service. aDNS is a private authoritative-only server. It does not
+provide recursive service. The aDNS authoritative-only server is cluster-wide.
+It is not a separate authoritative server on each node. All node-local
+recursive resolvers connect to one logical aDNS authoritative-only server. CCF
+replicates this server, which can expose multiple endpoints for availability.
+Native aDNS-aware clients can connect to these endpoints directly.
 
 The proposal replaces DNSSEC on the client-to-aDNS path with an authenticated,
 encrypted transport:
@@ -52,16 +79,16 @@ costs:
 
 These tradeoffs are less useful in the proposed Kubernetes environment. This
 environment has one operator and one service-discovery zone. It also gives the
-client a direct, authenticated connection to the resolver. The client already
-trusts the cluster resolver to apply cluster policy. It also trusts the
-resolver to return the correct split-horizon view. A strict DoH, DoT, or DoQ
-connection authenticates the resolver and protects each exchange. It also
-keeps queries and responses confidential in transit.
+node-local recursive resolver a direct, authenticated connection to aDNS. The
+cluster trusts aDNS to apply cluster policy. It also trusts aDNS to return
+correct authoritative data for the cluster zone. A strict DoH, DoT, or DoQ
+connection authenticates aDNS and protects each exchange. It also keeps
+queries and responses confidential in transit.
 
 Removing DNSSEC from this constrained path has several practical benefits:
 
-- **Simpler adoption.** Applications can use a standard encrypted DNS client,
-  while conventional applications use a node-local adapter.
+- **Simpler adoption.** Applications can use a native aDNS-aware client. Other
+  applications use a node-local recursive resolver.
 - **Faster iteration.** Service and EndpointSlice changes do not trigger RRset
   signatures or NSEC/NSEC3 maintenance.
 - **Smaller answers.** Responses contain ordinary Kubernetes DNS records, not
@@ -74,30 +101,32 @@ Removing DNSSEC from this constrained path has several practical benefits:
 
 This proposal deliberately changes the trust model. It does not claim that
 encrypted DNS and DNSSEC are generally interchangeable. Transport security
-protects a live exchange between a client and the resolver. It does not make
-the answer independently verifiable outside that channel.
+protects two types of live exchange. One connects a node-local recursive
+resolver to the aDNS authoritative-only server. The other connects a native
+aDNS-aware client to that server. Transport security does not make an answer
+independently verifiable outside its protected channel.
 
 ## Proposed architecture
 
-Only the compatibility adapter in this diagram is node-local. The secure aDNS
-endpoint is a shared cluster service. Thus, "local" has two meanings here. It
-describes the cluster scope and the adapter's cleartext ingress. It does not
-describe the location of authoritative aDNS state.
+Only the recursive resolver in this diagram is node-local. The shared aDNS
+authoritative-only server is cluster-wide. Here, **node-local** describes only
+the recursive resolver and its classic-DNS ingress. It does not describe aDNS
+or its authoritative state.
 
 ```mermaid
 flowchart LR
     API[Kubernetes API] --> Controller[aDNS controller]
     Controller -->|authenticated updates| CCF[CCF replicated state]
-    CCF --> ADNS[aDNS secure DNS endpoint]
-    Pod[Pod resolver] -->|local DNS| Adapter[Node-local adapter]
-    Adapter -->|DoH, DoT, or DoQ| ADNS
-    Native[Native encrypted DNS client] -->|DoH, DoT, or DoQ| ADNS
-    Adapter -->|out-of-zone only| Upstream[External recursive resolver]
+    CCF --> ADNS[aDNS authoritative-only server]
+    Pod[Pod stub resolver] -->|local DNS| Local[Node-local recursive resolver]
+    Local -->|DoH, DoT, or DoQ| ADNS
+    Native[Native aDNS-aware client] -->|DoH, DoT, or DoQ| ADNS
+    Local -->|forward out-of-zone only| Upstream[External recursive resolver]
 ```
 
 ### Control plane
 
-A Kubernetes controller watches the resources for forward service discovery.
+A Kubernetes controller watches resources for Kubernetes service discovery.
 It initially watches Services and EndpointSlices. It can also watch Pods. The
 controller uses normal list-watch reconciliation. It relists resources when a
 watch expires. It identifies each source object by kind, namespace, name, and
@@ -118,13 +147,13 @@ generation.
 
 The update API does not accept requests from arbitrary Pods. It authenticates
 the controller. It also applies a policy that limits writes to the configured
-origin. CCF governance controls the resolver configuration, controller
+origin. CCF governance controls the aDNS configuration, controller
 credentials, and trust-root changes.
 
 ### The single zone
 
 The deployment has one `origin`, such as `cluster.local.`. The origin is
-immutable or controlled by governance. It contains these forward names for
+immutable or controlled by governance. It contains these records for
 Kubernetes service discovery:
 
 - `A` and `AAAA` records for normal and headless Services;
@@ -140,28 +169,31 @@ clusters.
 
 The zone has one SOA and one default policy for TTL limits. Namespace labels do
 not create zone cuts. The `svc` and `pod` branches also do not create zone
-cuts. The resolver does not publish DNSKEY, DS, RRSIG, NSEC, or NSEC3 records.
-It does not use the AD bit to claim DNSSEC validation for this zone.
+cuts. The aDNS server does not publish DNSKEY, DS, RRSIG, NSEC, or NSEC3
+records. It does not use the AD bit to claim DNSSEC validation for this zone.
 
 The Kubernetes DNS-Based Service Discovery specification also defines reverse
 PTR records. These records use `in-addr.arpa.` and `ip6.arpa.`. They cannot
 belong to the single `cluster.local.` zone. Thus, the base profile does not
-claim full reverse-DNS conformance. An explicit policy tells the adapter to
-forward or refuse these queries. Authoritative reverse zones require the
+claim full reverse-DNS conformance. An explicit policy tells the node-local
+recursive resolver to forward or refuse these queries. Authoritative reverse
+zones require the
 [efficient delegation extension](./efficient_delegation_aDNS.md).
 
-For a name below the configured origin, the resolver uses committed CCF state.
-It returns an authoritative answer, NODATA, or NXDOMAIN. It does not recurse or
-delegate the query to another DNS server.
+For a name below the configured origin, the aDNS authoritative-only server
+reads committed CCF state. It returns an authoritative answer, NODATA, or
+NXDOMAIN. It never performs recursion or forwarding.
 
-For a query outside the origin, the deployment chooses one of two explicit
-policies:
+For every query outside the configured origin, the aDNS authoritative-only
+server returns REFUSED. For an out-of-zone Pod query, the node-local recursive
+resolver applies one of two policies:
 
-1. **Split forwarding:** the node-local adapter sends the query to an external
-   recursive resolver, preferably over an encrypted transport. The external
-   resolver's validation and trust policy is independent of the aDNS zone.
-2. **Cluster-zone only:** the adapter or aDNS returns REFUSED. Workloads use a
-   separate resolver for public names.
+1. **Split forwarding:** the node-local recursive resolver forwards the query
+  to an external recursive resolver, preferably over an encrypted transport.
+  The external resolver's validation and trust policy is independent of the
+  aDNS zone.
+2. **Cluster-zone only:** the node-local recursive resolver returns REFUSED.
+  Workloads use an external recursive resolver for public names.
 
 This separation prevents a client from treating external data as protected
 aDNS cluster-zone data.
@@ -202,16 +234,16 @@ replayable. The threat model then treats early DNS queries as replayable.
 
 Mutual TLS is optional. It can restrict access to cluster nodes or workloads.
 It can also support identity-based policy. However, it makes queries easier to
-link at the resolver. A node-local adapter normally authenticates as the node.
-A native client can use a workload identity when policy requires per-workload
-authorization.
+link at the aDNS server. A node-local recursive resolver normally authenticates
+as the node. A native aDNS-aware client can use a workload identity when policy
+requires per-workload authorization.
 
-### Enlightened clients and attested TLS bootstrap
+### Native aDNS-aware clients and attested TLS bootstrap
 
-An enlightened client is aware of aDNS. It can use DoT directly. It can also
-verify an aDNS attestation bundle. Thus, it does not need the node-local
-compatibility adapter. It uses the classic aDNS relying-party model to
-bootstrap trust. It then uses strict TLS authentication for DNS queries.
+A native aDNS-aware client can use DoT directly. It can also verify an aDNS
+attestation bundle. Thus, it does not need the node-local recursive resolver.
+It uses the classic aDNS relying-party model to bootstrap trust. It then uses
+strict TLS authentication for DNS queries.
 
 This design depends on the target CCF identity model described in the
 [Attestation section of the CCF post-quantum identity
@@ -311,34 +343,40 @@ Local policy can allow classical authentication or require post-quantum
 authentication. A requirement for both needs a separate composite or
 dual-authentication profile.
 
-Each node-local adapter can run this flow for legacy applications. An
-enlightened workload can run the flow itself. It then gets a direct,
-authenticated, and confidential path to the shared aDNS service.
+Each node-local recursive resolver can run this flow for legacy applications.
+A workload with a native aDNS-aware client can run the flow itself. It then
+gets a direct, authenticated, and confidential path to the shared aDNS
+authoritative-only server.
 
 ## Kubernetes integration
 
 Most libc stub resolvers and Kubernetes-generated `/etc/resolv.conf` files send
 classic DNS over UDP or TCP. They cannot be assumed to speak DoH, DoT, or DoQ.
-Thus, a DaemonSet deploys a node-local compatibility adapter:
+Thus, a DaemonSet deploys a node-local recursive resolver:
 
-1. kubelet configures Pods with the adapter's node-local address as their
-   nameserver and with the normal namespace and cluster-domain search list;
-2. the adapter accepts conventional DNS from local Pods;
-3. it routes names below the single cluster origin to aDNS over a pooled,
-   authenticated encrypted connection; and
-4. it caches positive RRsets for their remaining TTL. It caches negative
-   responses for at most `min(SOA TTL, SOA.MINIMUM)`. For DoH, it subtracts the
-   HTTP `Age`. It forwards or refuses other names according to deployment
-   policy.
+1. kubelet configures Pods with the recursive resolver's node-local address as
+  their nameserver. It also configures the normal namespace and cluster-domain
+  search list;
+2. the recursive resolver accepts recursive DNS queries from local Pods;
+3. it sends cluster-zone queries to the aDNS authoritative-only server over a
+  pooled, authenticated, encrypted connection; and
+4. it caches positive and negative responses within the specified limits. It
+  forwards other queries to an external recursive resolver or returns REFUSED,
+  as the deployment policy specifies.
 
-The initial adapter profile supports Linux nodes. It listens on a node-local
-link-local or ULA address. CNI or packet-filter rules keep the traffic on the
-node. A Pod has a separate network namespace. Thus, the Pod's loopback address
-does not reach an ordinary DaemonSet. Loopback requires a per-Pod sidecar or an
-explicit namespace arrangement. Windows needs a separate profile because its
-resolver and search-suffix behavior differs. If classic DNS crosses the cluster
-network, the path is not confidential from the Pod to aDNS. A native
-encrypted-DNS client can connect directly to aDNS and avoid this boundary.
+The node-local recursive resolver caches positive RRsets for their remaining
+TTL. It caches negative responses for at most
+`min(SOA TTL, SOA.MINIMUM)`. For DoH, it subtracts the HTTP `Age`.
+
+The initial recursive-resolver profile supports Linux nodes. It listens on a
+node-local link-local or ULA address. CNI or packet-filter rules keep the
+traffic on the node. A Pod has a separate network namespace. Thus, the Pod's
+loopback address does not reach an ordinary DaemonSet. Loopback requires a
+per-Pod sidecar or an explicit namespace arrangement. Windows needs a separate
+profile because its stub-resolver and search-suffix behavior differs. If
+classic DNS crosses the cluster network, the path is not confidential from the
+Pod to aDNS. A native aDNS-aware client can connect directly to aDNS and avoid
+this boundary.
 
 The endpoint address, authentication name, and trust material must be
 provisioned without using that endpoint for resolution. A stable ClusterIP and
@@ -349,19 +387,21 @@ resolution.
 
 ## Trust and security model
 
-The design protects against a network attacker between the client and aDNS.
-The attacker can observe, inject, or modify packets. Strict server
-authentication prevents the attacker from impersonating aDNS. It also protects
-a valid one-RTT exchange from modification. Encryption hides DNS names and
-answers on this path. However, enabled early data can be replayed. Packet
+The design protects the encrypted path between the aDNS authoritative-only
+server and either a node-local recursive resolver or a native aDNS-aware
+client. A network attacker can observe, inject, or modify packets. Strict
+server authentication prevents the attacker from impersonating aDNS. It also
+protects a valid one-RTT exchange from modification. Encryption hides DNS names
+and answers on this path. However, enabled early data can be replayed. Packet
 timing and size can also disclose information.
 
-The client trusts:
+The trust model includes:
 
 - the provisioned aDNS service identity and its rotation mechanism;
 - the aDNS application, its CCF governance, and its committed state;
 - the Kubernetes controller that translates API objects into records; and
-- a node-local adapter and its cache when legacy applications use one.
+- a node-local recursive resolver and its cache when legacy applications use
+  one.
 
 micro aDNS uses the proposed CCF service-identity attestation. This attestation
 binds the TLS identity to an accepted deployment, as described in the
@@ -374,10 +414,12 @@ The base design does not protect against:
 
 - a compromised or malicious aDNS service returning false data;
 - a compromised controller publishing false Kubernetes state;
-- a compromised node-local adapter modifying or disclosing answers;
+- a compromised node-local recursive resolver modifying or disclosing
+  answers;
 - queries being logged or correlated at either endpoint;
 - traffic analysis based on timing and size; or
-- denial of service against the adapter, transport endpoint, or CCF network.
+- denial of service against the recursive resolver, aDNS endpoint, or CCF
+  network.
 
 The base design does not provide DNSSEC object security. An answer outside its
 authenticated channel has no portable proof of origin. Thus, an untrusted
@@ -429,8 +471,8 @@ An incremental deployment can proceed as follows:
 
 1. Implement the single-zone Kubernetes controller and an RFC 8484 DoH
    endpoint using normal DNS messages without DNSSEC records.
-2. Deploy a node-local adapter with a pre-provisioned aDNS address and trust
-   bundle. Route only the cluster origin to aDNS at first.
+2. Deploy a node-local recursive resolver with a pre-provisioned aDNS address
+  and trust bundle. Route only the cluster origin to aDNS at first.
 3. Compare answers with the existing cluster DNS and measure update latency,
    cache behavior, connection reuse, and failure recovery.
 4. Make secure aDNS authoritative for the cluster origin and fail closed on
@@ -459,6 +501,10 @@ an optional extension for multiple authorities and proof-bearing answers. See
 
 - [Kubernetes DNS for Services and
   Pods](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/)
+- [RFC 9499: DNS Terminology, Section
+  6](https://www.rfc-editor.org/rfc/rfc9499.html#section-6)
+- [RFC 1034: Domain Names - Concepts and Facilities, Section
+  2.4](https://www.rfc-editor.org/rfc/rfc1034.html#section-2.4)
 - [RFC 4033: DNS Security Introduction and
   Requirements](https://www.rfc-editor.org/rfc/rfc4033.html)
 - [RFC 4034: Resource Records for the DNS Security

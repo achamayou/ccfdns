@@ -1,28 +1,32 @@
 # Efficient delegation for aDNS
 
 This document extends the single-zone
-[micro aDNS proposal](./micro_aDNS.md). It describes efficient delegation to
-multiple zone authorities. It also describes proof-bearing DNS answers.
+[micro aDNS cluster DNS service](./micro_aDNS.md). It describes an optional
+multi-zone design with a separate zone authority for each zone. It also
+describes proof-bearing DNS answers.
+
+Each zone authority is a private authoritative-only server for exactly one
+zone. It never performs forwarding or recursion.
 
 The base proposal intentionally uses one zone. A later deployment can support
 independently administered zones or proof-bearing answers. For this purpose,
-aDNS can commit each zone to a separate Merkle tree. It signs the root of each
-committed zone version. One root signature then replaces DNSSEC signatures on
-the zone's RRsets.
+each zone authority commits its zone to a separate Merkle tree. It signs the
+root of each committed zone version. One root signature then replaces DNSSEC
+signatures on the zone's RRsets.
 
-This proposal defines an application-specific extension. It is not DNSSEC. An
-ordinary validating DNS resolver does not understand it. A standard encrypted
-DNS client can continue to trust the live transport and ignore proofs. A
-proof-aware client uses an aDNS-specific response profile.
+This proposal defines an application-specific extension. It is not DNSSEC. A
+resolver that supports only standard DNSSEC validation does not understand this
+extension. A native aDNS-aware client can authenticate the encrypted transport
+and ignore proofs. A proof-aware client uses an aDNS-specific response profile.
 
 ## Zone commitment
 
-An authenticated ordered map represents each zone. Each key contains the
-canonical owner name, class, and RR type. Each value contains the canonical
-RRset and its original authoritative TTL. Separate authenticated metadata lists
-the types at each existing name. This metadata also represents empty
-non-terminals. Thus, a proof can distinguish NXDOMAIN from NODATA. A verifier
-can also reconstruct the exact value that includes the hashed TTL.
+Each zone authority represents its zone as an authenticated ordered map. Each
+key contains the canonical owner name, class, and RR type. Each value contains
+the canonical RRset and its original authoritative TTL. Separate authenticated
+metadata lists the types at each existing name. This metadata also represents
+empty non-terminals. Thus, a proof can distinguish NXDOMAIN from NODATA. A
+verifier can also reconstruct the exact value that includes the hashed TTL.
 
 The tree profile defines the canonical DNS encoding and ordering. It also
 defines the hash algorithm and domain separation. Conceptually:
@@ -72,12 +76,12 @@ validity interval limit replay. A stateful client records the latest accepted
 generation. It rejects an older generation.
 
 Each zone has a separate tree and root statement. An authenticated service
-catalog maps each zone name to its current root key and policy. The aDNS service
-identity can sign every root when one operator controls all zones. For separate
-administrators, the catalog commits the key and authorization for each zone.
-Cross-organization delegation needs an additional protocol. Parent-to-child
-proof chains also need an additional protocol. This extension does not define
-these protocols.
+catalog maps each zone name to its authoritative-only server, current root key,
+and policy. One service identity can sign every root when one operator controls
+all zones. For separate administrators, the catalog commits the key and
+authorization for each zone. Cross-organization delegation needs an additional
+protocol. Parent-to-child proof chains also need an additional protocol. This
+extension does not define these protocols.
 
 The catalog also authenticates zone selection. The client finds the unique
 managed zone with the longest matching suffix. It accepts the response only if
@@ -103,13 +107,14 @@ equal. The client derives the proof names from the current question. These
 names include the owner, closest encloser, next-closer name, and wildcard
 candidate.
 
-The proof class must agree with the DNS response code. Positive, NODATA, and
+The DNS response code must match the proof category. Positive, NODATA, and
 wildcard proofs require `NOERROR`. An NXDOMAIN proof requires `NXDOMAIN`. The
 proof must cover every RRset that the client uses from the Answer, Authority,
 or Additional section. This includes the SOA that sets the RFC 2308 negative
-cache lifetime. The client rejects or ignores an RRset that has no proof. It
-also checks that the proof authenticates each canonical owner, class, type,
-TTL-bearing value, and RDATA that it uses.
+cache lifetime. The client ignores an unproved RRset. If the client needs that
+RRset to answer the query, it rejects the response. It also checks that the
+proof authenticates each canonical owner, class, type, TTL-bearing value, and
+RDATA that it uses.
 
 - **Positive answer.** The proof shows the requested RRset at the current
   `QNAME`.
@@ -200,7 +205,7 @@ replace DNSSEC on the public DNS.
 
 ## References
 
-- [micro aDNS: a Kubernetes cluster resolver](./micro_aDNS.md)
+- [micro aDNS: a single-zone cluster DNS service for Kubernetes](./micro_aDNS.md)
 - [RFC 2308: Negative Caching of DNS Queries](https://www.rfc-editor.org/rfc/rfc2308.html)
 - [RFC 4033: DNS Security Introduction and
   Requirements](https://www.rfc-editor.org/rfc/rfc4033.html)

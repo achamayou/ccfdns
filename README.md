@@ -1,9 +1,10 @@
 # ccfdns
 
-A CCF-based, attested DNS server.
+A CCF-based, attested, private authoritative-only DNS server for one zone.
 
-See [micro aDNS as a Kubernetes cluster resolver](./micro_aDNS.md) for a
-single-zone design that uses encrypted DNS transports instead of DNSSEC.
+See [micro aDNS as a single-zone cluster DNS service for
+Kubernetes](./micro_aDNS.md) for a design that uses encrypted DNS transports
+instead of DNSSEC.
 See [efficient delegation for aDNS](./efficient_delegation_aDNS.md) for an
 optional multi-zone design based on one Merkle tree per zone.
 
